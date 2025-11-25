@@ -5,7 +5,13 @@ edition = "2024"
 
 [dependencies]
 libc = "0.2"
-log = "0.4"
-env_logger = "0.10"
 threadpool = "1.8"
+
+log = "0.4"
+chrono = "0.4"
+chrono-tz = "0.10"
+ansi_term = "0.12"
+env_logger = "0.10"
+
+
 clap = { version = "4.4", features = ["derive"] }

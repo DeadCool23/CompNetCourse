@@ -1,5 +1,5 @@
 pub fn get_css() -> String {
-r#"* {
+    r#"* {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
@@ -162,5 +162,6 @@ footer {
     .chess-rules {
         grid-template-columns: 1fr;
     }
-}"#.to_string()
+}"#
+    .to_string()
 }

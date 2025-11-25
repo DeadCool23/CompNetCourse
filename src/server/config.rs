@@ -42,7 +42,7 @@ impl Default for ServerConfig {
             document_root: PathBuf::from("./static"),
             max_connections: 1000,
             max_file_size: 134217728,
-            select_timeout: 1
+            select_timeout: 1,
         }
     }
 }

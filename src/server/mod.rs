@@ -1,18 +1,18 @@
 pub mod config;
-pub mod http_status;
 pub mod connection_manager;
+pub mod http_status;
 pub mod request_handler;
 
-use libc::{fd_set, FD_SET, FD_ZERO, timespec, pselect};
-use log::{info, warn, error, debug};
+use libc::{FD_SET, FD_ZERO, fd_set, pselect, timespec};
+use log::{debug, error, info, warn};
 use std::net::TcpListener;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use threadpool::ThreadPool;
 
-use crate::server::connection_manager::ConnectionManager;
 use crate::server::config::ServerConfig;
+use crate::server::connection_manager::ConnectionManager;
 
 pub struct HttpServer {
     config: ServerConfig,
@@ -25,9 +25,9 @@ impl HttpServer {
         let addr = format!("{}:{}", config.host, config.port);
         let listener = TcpListener::bind(&addr)?;
         listener.set_nonblocking(true)?;
-        
+
         info!("Server started on {}", addr);
-        
+
         let connection_manager = Arc::new(ConnectionManager::new(listener));
         let thread_pool = ThreadPool::new(config.threads);
 
@@ -40,7 +40,7 @@ impl HttpServer {
 
     pub fn run(&self) {
         info!("Server running with {} threads", self.config.threads);
-        
+
         if let Err(e) = self.create_default_files() {
             error!("Failed to create default files: {}", e);
         }
@@ -60,16 +60,21 @@ impl HttpServer {
                     error!("Failed to set non-blocking: {}", e);
                     return;
                 }
-                
+
                 if !self.connection_manager.add_connection(stream) {
-                    warn!("Maximum connections reached, rejecting connection from {}", addr);
+                    warn!(
+                        "Maximum connections reached, rejecting connection from {}",
+                        addr
+                    );
                 } else {
-                    info!("Accepted connection from {} (total: {})", 
-                          addr, self.connection_manager.get_connections_fds().len());
+                    info!(
+                        "Accepted connection from {} (total: {})",
+                        addr,
+                        self.connection_manager.get_connections_fds().len()
+                    );
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(e) => {
                 error!("Error accepting connection: {}", e);
             }
@@ -115,13 +120,13 @@ impl HttpServer {
                     let connection_manager = Arc::clone(&self.connection_manager);
                     let document_root = self.config.document_root.clone();
                     let max_file_size = self.config.max_file_size;
-                    
+
                     self.thread_pool.execute(move || {
                         if let Some(stream) = connection_manager.get_stream(fd) {
                             crate::server::request_handler::handle_client(
-                                stream, 
+                                stream,
                                 &document_root,
-                                max_file_size
+                                max_file_size,
                             );
                         }
                     });
@@ -133,9 +138,9 @@ impl HttpServer {
     }
 
     fn create_default_files(&self) -> std::io::Result<()> {
-        use crate::static_files::{html_content, css_content};
+        use crate::static_files::{css_content, html_content};
         use std::fs;
-        
+
         let index_path = self.config.document_root.join("index.html");
         let css_path = self.config.document_root.join("style.css");
 
@@ -145,8 +150,11 @@ impl HttpServer {
 
         fs::write(index_path, html_content::get_html())?;
         fs::write(css_path, css_content::get_css())?;
-        
-        info!("Created default chess-themed page in {:?}", self.config.document_root);
+
+        info!(
+            "Created default chess-themed page in {:?}",
+            self.config.document_root
+        );
         Ok(())
     }
 }

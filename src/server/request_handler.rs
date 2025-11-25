@@ -1,6 +1,6 @@
-use log::{info, warn, error, debug};
+use log::{debug, error, info, warn};
 use std::fs;
-use std::io::{Read, Write, BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 
@@ -71,7 +71,13 @@ pub fn handle_client(mut stream: TcpStream, document_root: &Path, max_file_size:
     let file_path = document_root.join(&path[1..]);
 
     match method {
-        "GET" | "HEAD" => handle_file_request(&mut stream, &file_path, method == "HEAD", &peer_addr, max_file_size),
+        "GET" | "HEAD" => handle_file_request(
+            &mut stream,
+            &file_path,
+            method == "HEAD",
+            &peer_addr,
+            max_file_size,
+        ),
         _ => {
             warn!("Unsupported method from {}: {}", peer_addr, method);
             send_response(&mut stream, HttpStatus::MethodNotAllowed, "");
@@ -80,11 +86,11 @@ pub fn handle_client(mut stream: TcpStream, document_root: &Path, max_file_size:
 }
 
 fn handle_file_request(
-    stream: &mut TcpStream, 
-    file_path: &Path, 
-    is_head: bool, 
+    stream: &mut TcpStream,
+    file_path: &Path,
+    is_head: bool,
     client_addr: &str,
-    max_file_size: u64
+    max_file_size: u64,
 ) {
     if !file_path.exists() {
         info!("File not found for {}: {:?}", client_addr, file_path);
@@ -93,7 +99,10 @@ fn handle_file_request(
     }
 
     if !file_path.is_file() {
-        warn!("Attempt to access directory from {}: {:?}", client_addr, file_path);
+        warn!(
+            "Attempt to access directory from {}: {:?}",
+            client_addr, file_path
+        );
         send_response(stream, HttpStatus::Forbidden, "");
         return;
     }
@@ -108,18 +117,24 @@ fn handle_file_request(
     };
 
     if metadata.len() > max_file_size {
-        warn!("File too large for {}: {:?} ({} bytes)", 
-              client_addr, file_path, metadata.len());
+        warn!(
+            "File too large for {}: {:?} ({} bytes)",
+            client_addr,
+            file_path,
+            metadata.len()
+        );
         send_response(stream, HttpStatus::PayloadTooLarge, "");
         return;
     }
 
-    let ext = file_path.extension()
+    let ext = file_path
+        .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_lowercase();
-    
-    let content_type = MIME_TYPES.iter()
+
+    let content_type = MIME_TYPES
+        .iter()
         .find(|(e, _)| *e == ext)
         .map(|(_, mime)| *mime)
         .unwrap_or("application/octet-stream");
@@ -139,7 +154,7 @@ fn handle_file_request(
             Ok(file) => {
                 let mut reader = BufReader::new(file);
                 let mut writer = BufWriter::new(stream);
-                
+
                 let headers = format!(
                     "{}Content-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     HttpStatus::Ok.as_response_line(),
@@ -174,13 +189,21 @@ fn handle_file_request(
                 }
             }
             Err(e) => {
-                error!("Error opening file {:?} for {}: {}", file_path, client_addr, e);
+                error!(
+                    "Error opening file {:?} for {}: {}",
+                    file_path, client_addr, e
+                );
                 send_response(stream, HttpStatus::InternalServerError, "");
             }
         }
     }
 
-    info!("Served file to {}: {:?} ({} bytes)", client_addr, file_path, metadata.len());
+    info!(
+        "Served file to {}: {:?} ({} bytes)",
+        client_addr,
+        file_path,
+        metadata.len()
+    );
 }
 
 fn send_response(stream: &mut TcpStream, status: HttpStatus, body: &str) {

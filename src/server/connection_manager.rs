@@ -63,7 +63,7 @@ pub unsafe fn fd_isset(fd: RawFd, set: *mut fd_set) -> bool {
         use libc::FD_ISSET;
         FD_ISSET(fd, set)
     }
-    
+
     #[cfg(not(target_os = "linux"))]
     {
         let set_ref = &*set;
@@ -71,7 +71,7 @@ pub unsafe fn fd_isset(fd: RawFd, set: *mut fd_set) -> bool {
         let bits_per_element = std::mem::size_of::<libc::c_ulong>() * 8;
         let word = fd / bits_per_element;
         let bit = fd % bits_per_element;
-        
+
         if word >= set_ref.fds_bits.len() {
             false
         } else {
