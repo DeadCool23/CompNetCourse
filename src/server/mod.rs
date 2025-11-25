@@ -123,7 +123,7 @@ impl HttpServer {
 
                     self.thread_pool.execute(move || {
                         if let Some(stream) = connection_manager.get_stream(fd) {
-                            crate::server::request_handler::handle_client(
+                            request_handler::handle_client(
                                 stream,
                                 &document_root,
                                 max_file_size,

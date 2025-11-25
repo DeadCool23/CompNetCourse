@@ -8,7 +8,7 @@ pub fn init() {
         .create(true)
         .append(true)
         .open("server.log")
-        .expect(&format!("Can't open server.log"));
+        .expect("Can't open server.log");
 
     Builder::from_default_env()
         .format(move |buf, record| {
