@@ -123,11 +123,7 @@ impl HttpServer {
 
                     self.thread_pool.execute(move || {
                         if let Some(stream) = connection_manager.get_stream(fd) {
-                            request_handler::handle_client(
-                                stream,
-                                &document_root,
-                                max_file_size,
-                            );
+                            request_handler::handle_client(stream, &document_root, max_file_size);
                         }
                     });
                 }

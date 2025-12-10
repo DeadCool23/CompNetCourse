@@ -1,6 +1,6 @@
 use log::{debug, error, info, warn};
 use std::fs;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write, copy};
 use std::net::TcpStream;
 use std::path::Path;
 
@@ -167,21 +167,8 @@ fn handle_file_request(
                     return;
                 }
 
-                let mut buffer = [0u8; 8192];
-                loop {
-                    match reader.read(&mut buffer) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            if let Err(e) = writer.write_all(&buffer[..n]) {
-                                error!("Error sending file data to {}: {}", client_addr, e);
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            error!("Error reading file for {}: {}", client_addr, e);
-                            break;
-                        }
-                    }
+                if let Err(e) = copy(&mut reader, &mut writer) {
+                    error!("Error sending file data to {}: {}", client_addr, e);
                 }
 
                 if let Err(e) = writer.flush() {
