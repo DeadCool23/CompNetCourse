@@ -1,13 +1,13 @@
-use libc::fd_set;
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::RawFd;
 use std::sync::{Arc, Mutex};
 
 use crate::server::config::ServerConfig;
+use crate::server::connection::{Connection, ConnectionStage};
 
 pub struct ConnectionManager {
-    pub connections: Arc<Mutex<HashMap<RawFd, TcpStream>>>,
+    connections: Arc<Mutex<HashMap<RawFd, Connection>>>,
     pub listener: TcpListener,
     max_connections: usize,
 }
@@ -35,47 +35,78 @@ impl ConnectionManager {
         if connections.len() >= self.max_connections {
             return false;
         }
-        let fd = stream.as_raw_fd();
-        connections.insert(fd, stream);
+        let connection = Connection::new(stream);
+        let fd = connection.fd;
+        connections.insert(fd, connection);
         true
     }
 
-    pub fn remove_connection(&self, fd: RawFd) {
-        let mut connections = self.connections.lock().unwrap();
-        connections.remove(&fd);
-    }
-
-    pub fn get_connections_fds(&self) -> Vec<RawFd> {
-        let connections = self.connections.lock().unwrap();
-        connections.keys().cloned().collect()
-    }
-
-    pub fn get_stream(&self, fd: RawFd) -> Option<TcpStream> {
+    pub fn remove_connection(&self, fd: RawFd) -> Option<Connection> {
         let mut connections = self.connections.lock().unwrap();
         connections.remove(&fd)
     }
-}
 
-#[allow(unsafe_op_in_unsafe_fn)]
-pub unsafe fn fd_isset(fd: RawFd, set: *mut fd_set) -> bool {
-    #[cfg(target_os = "linux")]
+    pub fn with_connection<F, R>(&self, fd: RawFd, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut Connection) -> R,
     {
-        use libc::FD_ISSET;
-        FD_ISSET(fd, set)
+        let mut connections = self.connections.lock().unwrap();
+        if let Some(conn) = connections.get_mut(&fd) {
+            Some(f(conn))
+        } else {
+            None
+        }
     }
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        let set_ref = &*set;
-        let fd = fd as usize;
-        let bits_per_element = std::mem::size_of::<libc::c_ulong>() * 8;
-        let word = fd / bits_per_element;
-        let bit = fd % bits_per_element;
+    pub fn get_connections_for_select(&self) -> (Vec<RawFd>, Vec<RawFd>) {
+        let connections = self.connections.lock().unwrap();
+        let mut read_fds = Vec::new();
+        let mut write_fds = Vec::new();
 
-        if word >= set_ref.fds_bits.len() {
-            false
+        for (fd, conn) in connections.iter() {
+            match conn.stage {
+                ConnectionStage::Recv | ConnectionStage::Parse => {
+                    read_fds.push(*fd);
+                }
+                ConnectionStage::SendHeaders | ConnectionStage::SendFile => {
+                    write_fds.push(*fd);
+                }
+                ConnectionStage::Close => {}
+            }
+        }
+
+        (read_fds, write_fds)
+    }
+
+    pub fn get_closed_connections(&self) -> Vec<RawFd> {
+        let connections = self.connections.lock().unwrap();
+        connections
+            .iter()
+            .filter(|(_, conn)| matches!(conn.stage, ConnectionStage::Close))
+            .map(|(fd, _)| *fd)
+            .collect()
+    }
+
+    pub fn get_connections_count(&self) -> usize {
+        let connections = self.connections.lock().unwrap();
+        connections.len()
+    }
+
+    pub fn set_file_for_connection(
+        &self,
+        fd: RawFd,
+        file: std::fs::File,
+        file_size: u64,
+        is_head: bool,
+    ) -> bool {
+        let mut connections = self.connections.lock().unwrap();
+        if let Some(conn) = connections.get_mut(&fd) {
+            conn.file = Some(file);
+            conn.file_size = file_size;
+            conn.is_head = is_head;
+            true
         } else {
-            (set_ref.fds_bits[word] & (1 << bit)) != 0
+            false
         }
     }
 }

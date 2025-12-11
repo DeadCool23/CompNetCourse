@@ -4,7 +4,6 @@ pub enum HttpStatus {
     BadRequest,
     Forbidden,
     NotFound,
-    MethodNotAllowed,
     PayloadTooLarge,
     InternalServerError,
 }
@@ -16,7 +15,6 @@ impl HttpStatus {
             Self::BadRequest => 400,
             Self::Forbidden => 403,
             Self::NotFound => 404,
-            Self::MethodNotAllowed => 405,
             Self::PayloadTooLarge => 413,
             Self::InternalServerError => 500,
         }
@@ -28,7 +26,6 @@ impl HttpStatus {
             Self::BadRequest => "Bad Request",
             Self::Forbidden => "Forbidden",
             Self::NotFound => "Not Found",
-            Self::MethodNotAllowed => "Method Not Allowed",
             Self::PayloadTooLarge => "Payload Too Large",
             Self::InternalServerError => "Internal Server Error",
         }
