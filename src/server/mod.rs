@@ -1,63 +1,43 @@
 pub mod config;
 pub mod connection;
-pub mod connection_handler;
 pub mod connection_manager;
+mod handlers;
 pub mod http_status;
-pub mod request_parser;
-pub mod select_handler;
 
+use libc::{fd_set, FD_SET, FD_ISSET, FD_ZERO, pselect, timespec};
 use log::{debug, error, info, warn};
+use std::net::TcpListener;
 use std::os::fd::AsRawFd;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use threadpool::ThreadPool;
 
 use config::ServerConfig;
-use connection::ConnectionStage;
-use connection_handler::ConnectionHandler;
 use connection_manager::ConnectionManager;
-use request_parser::RequestParser;
-use select_handler::SelectHandler;
+use handlers::{handle_readable_in_pool, handle_writable_in_pool};
 
 pub struct HttpServer {
     config: ServerConfig,
     connection_manager: Arc<ConnectionManager>,
-    _thread_pool: ThreadPool,
-    connection_handler: ConnectionHandler,
-    select_handler: SelectHandler,
-    parse_rx: Arc<std::sync::Mutex<mpsc::Receiver<(i32, Vec<u8>)>>>,
+    thread_pool: ThreadPool,
 }
 
 impl HttpServer {
     pub fn new(config: &ServerConfig) -> std::io::Result<Self> {
         let addr = format!("{}:{}", config.host, config.port);
-        let listener = std::net::TcpListener::bind(&addr)?;
+        let listener = TcpListener::bind(&addr)?;
         listener.set_nonblocking(true)?;
 
         info!("Server started on {}", addr);
 
         let connection_manager = Arc::new(ConnectionManager::with_config(listener, config));
-        let _thread_pool = ThreadPool::new(config.threads);
-
-        let (parse_tx, parse_rx) = mpsc::channel();
-        let parse_rx = Arc::new(std::sync::Mutex::new(parse_rx));
-
-        let request_parser = RequestParser::new(config.document_root.clone(), config.max_file_size);
-
-        let connection_handler =
-            ConnectionHandler::new(Arc::clone(&connection_manager), request_parser, parse_tx);
-
-        let select_handler =
-            SelectHandler::new(Arc::clone(&connection_manager), config.select_timeout);
+        let thread_pool = ThreadPool::new(config.threads);
 
         Ok(Self {
             config: config.clone(),
             connection_manager,
-            _thread_pool,
-            connection_handler,
-            select_handler,
-            parse_rx,
+            thread_pool,
         })
     }
 
@@ -76,7 +56,6 @@ impl HttpServer {
         loop {
             self.accept_new_connections(&mut total_connections, &mut active_connections);
             self.handle_ready_connections(listener_fd, &active_connections);
-            self.process_parsed_requests();
             self.cleanup_closed_connections(&mut active_connections);
             thread::sleep(Duration::from_millis(1));
         }
@@ -117,57 +96,97 @@ impl HttpServer {
     }
 
     fn handle_ready_connections(&self, listener_fd: i32, active_connections: &usize) {
-        let (mut read_set, mut write_set, mut error_set, max_fd) =
-            self.select_handler.prepare_select_sets(listener_fd);
+        let (read_fds, write_fds) = self.connection_manager.get_connections_for_select();
 
-        match self.select_handler.wait_for_events(
-            &mut read_set,
-            &mut write_set,
-            &mut error_set,
-            max_fd,
-        ) {
-            Ok(ready_count) if ready_count > 0 => {
-                let (ready_read, ready_write, _) = self.select_handler.get_ready_connections(
-                    listener_fd,
-                    &read_set,
-                    &write_set,
-                    &error_set,
-                );
+        if read_fds.is_empty() && write_fds.is_empty() {
+            return;
+        }
 
-                let mut ready_fds = 0;
+        let mut read_set: fd_set = unsafe { std::mem::zeroed() };
+        let mut write_set: fd_set = unsafe { std::mem::zeroed() };
+        let mut error_set: fd_set = unsafe { std::mem::zeroed() };
 
-                for &fd in &ready_read {
-                    self.connection_handler.handle_readable_connection(fd);
-                    ready_fds += 1;
-                }
+        unsafe { FD_ZERO(&mut read_set) };
+        unsafe { FD_ZERO(&mut write_set) };
+        unsafe { FD_ZERO(&mut error_set) };
 
-                for &fd in &ready_write {
-                    self.connection_handler.handle_writable_connection(fd);
-                    ready_fds += 1;
-                }
+        unsafe {FD_SET(listener_fd, &mut read_set) };
+        let mut max_fd = listener_fd;
 
-                self.select_handler
-                    .log_ready_connections(ready_fds, active_connections);
-            }
-            Ok(ready_count) if ready_count == 0 => {}
-            Ok(_) => {}
-            Err(e) => {
-                error!("pselect error: {}", e);
+        for &fd in &read_fds {
+            unsafe { FD_SET(fd, &mut read_set) };
+            unsafe { FD_SET(fd, &mut error_set) };
+            if fd > max_fd {
+                max_fd = fd;
             }
         }
-    }
 
-    fn process_parsed_requests(&self) {
-        let parse_rx = self.parse_rx.lock().unwrap();
-        while let Ok((fd, headers)) = parse_rx.try_recv() {
-            self.connection_manager.with_connection(fd, |conn| {
-                if conn.stage == ConnectionStage::Parse {
-                    conn.headers = headers;
-                    conn.headers_sent = 0;
-                    conn.stage = ConnectionStage::SendHeaders;
-                    debug!("Request parsed and ready to send headers on fd {}", fd);
+        for &fd in &write_fds {
+            unsafe { libc::FD_SET(fd, &mut write_set) };
+            unsafe { libc::FD_SET(fd, &mut error_set) };
+            if fd > max_fd {
+                max_fd = fd;
+            }
+        }
+
+        let timeout = timespec {
+            tv_sec: 0,
+            tv_nsec: 10_000_000,
+        };
+
+        let ready_count = unsafe {
+            pselect(
+                max_fd + 1,
+                &mut read_set,
+                &mut write_set,
+                &mut error_set,
+                &timeout,
+                std::ptr::null_mut(),
+            )
+        };
+
+        if ready_count > 0 {
+            let mut ready_fds = 0;
+
+            for &fd in &read_fds {
+                if unsafe { FD_ISSET(fd, &mut read_set) } {
+                    let connection_manager = Arc::clone(&self.connection_manager);
+                    let doc_root = self.config.document_root.clone();
+                    let max_file_size = self.config.max_file_size;
+
+                    self.thread_pool.execute(move || {
+                        handle_readable_in_pool(
+                            fd,
+                            connection_manager,
+                            doc_root,
+                            max_file_size,
+                        );
+                    });
+                    ready_fds += 1;
                 }
-            });
+            }
+
+            for &fd in &write_fds {
+                if unsafe { FD_ISSET(fd, &mut write_set) } {
+                    let connection_manager = Arc::clone(&self.connection_manager);
+
+                    self.thread_pool.execute(move || {
+                        handle_writable_in_pool(fd, connection_manager);
+                    });
+                    ready_fds += 1;
+                }
+            }
+
+            if ready_fds > 0 {
+                info!(
+                    "pselect found {} ready connections (total: {}, active: {})",
+                    ready_fds,
+                    self.connection_manager.get_connections_count(),
+                    active_connections
+                );
+            }
+        } else if ready_count < 0 {
+            error!("pselect error: {}", std::io::Error::last_os_error());
         }
     }
 
